@@ -2,7 +2,6 @@ This repository contains integration scripts, configuration, documentation,
 and patches for third-party projects.
 
 - Scripts, configuration and documentation written for this repository: MIT
-  (or whichever you pick).
 - Patches to DXVK (https://github.com/doitsujin/dxvk): zlib/libpng license,
   the same as DXVK. Binaries built from these patches are modified versions
   of DXVK, not the original.
