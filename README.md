@@ -12,11 +12,16 @@ to the RGBA16F scene pass (`fmt=97`) with a Y flip - otherwise you get
 multiple foveation spots. These are the tested values, not universal
 requirements.
 
+> [!WARNING]
+> Experimental, use at your own risk. This is an unofficial modification, not endorsed by or affiliated with VRChat, WiVRn or DXVK. It replaces `d3d11.dll` and `dxgi.dll` in your Proton install, and VRChat's rules or anti-cheat may treat modified clients differently. I haven't verified how. Tested only on an RTX 3060 Ti with a Pico 4 Pro.
+
 ## Install
 
-**DXVK** - replaces `d3d11.dll` and `dxgi.dll` in a Proton install:
+**DXVK** - replaces `d3d11.dll` and `dxgi.dll` in a Proton install:  
+**! Replaces files in your Proton install (originals are backed up to `.backup/`).**
 
-    ./scripts/install-dxvk.sh --dxvk-from ./dxvk-gaze-vrs.zip "/path/to/Proton"
+    ./scripts/install-dxvk.sh --dxvk-from ./dxvk-gaze-vrs.zip "/path/to/Proton"  
+
 
 Omit `--dxvk-from` to use a local build from `dist/dxvk`. The installer
 backs up the originals to `.backup/` and only touches those two files. A
