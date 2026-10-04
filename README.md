@@ -36,7 +36,7 @@ matching `v26.9` client from WiVRn's releases.
 
 ## Run VRChat
 
-    DXVK_GAZE_VRS=1 DXVK_GAZE_FMT=97 DXVK_GAZE_FLIP_Y=1 DXVK_GAZE_R1=0.5 DXVK_GAZE_R2=0.65 DXVK_GAZE_COARSE=6
+    DXVK_GAZE_VRS=1 DXVK_GAZE_FMT=97 DXVK_GAZE_FLIP_Y=1 DXVK_GAZE_R1=0.4 DXVK_GAZE_R2=0.5 DXVK_GAZE_COARSE=6
 
 Add `DXVK_GAZE_DEBUG=1 DXVK_GAZE_DOT=1` to draw the gaze dots. See
 [`config/vrchat.env`](config/vrchat.env).
@@ -66,6 +66,23 @@ Verify the shared-memory file exists while a session is up:
 For a debug run with `PROTON_LOG=1`:
 
     grep -a "passes in last" -A8 ~/steam-438100.log | tail -24
+
+### What R1 and R2 mean
+
+`DXVK_GAZE_R1` and `R2` are radii, not screen fractions, and `d` is
+normalized by the shorter eye dimension. So for a square eye:
+
+| `R1` | full-res area |
+|---|---|
+| 0.06 | ~0.3% (tested value) |
+| 0.25 | ~20% |
+| 0.50 | ~78% |
+
+`R1` is where shading starts to drop; `R2` is where it hits `COARSE`.
+Below `R1` is 1×1, between `R1` and `R2` is 2×2, beyond `R2` is whatever
+`DXVK_GAZE_COARSE` says. Keep `R2 > R1`, or the transition band
+disappears. They're read at device creation, so a VRChat restart is
+needed to change them.
 
 ## Build
 
