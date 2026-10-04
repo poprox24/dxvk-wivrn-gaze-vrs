@@ -1,0 +1,1154 @@
+diff --git a/src/dxvk/dxvk_cmdlist.h b/src/dxvk/dxvk_cmdlist.h
+index 38891eb0..8365daa1 100644
+--- a/src/dxvk/dxvk_cmdlist.h
++++ b/src/dxvk/dxvk_cmdlist.h
+@@ -1094,6 +1094,13 @@ namespace dxvk {
+     }
+ 
+ 
++    void cmdSetFragmentShadingRate(
++      const VkExtent2D*                 fragmentSize,
++      const VkFragmentShadingRateCombinerOpKHR* combinerOps) {
++      m_vkd->vkCmdSetFragmentShadingRateKHR(getCmdBuffer(), fragmentSize, combinerOps);
++    }
++
++
+     void cmdSetDepthBias(
+             float                   depthBiasConstantFactor,
+             float                   depthBiasClamp,
+diff --git a/src/dxvk/dxvk_context.cpp b/src/dxvk/dxvk_context.cpp
+index 47f20bda..a297447c 100644
+--- a/src/dxvk/dxvk_context.cpp
++++ b/src/dxvk/dxvk_context.cpp
+@@ -7,6 +7,7 @@
+ 
+ #include "dxvk_device.h"
+ #include "dxvk_context.h"
++#include "dxvk_gaze_dot.h"
+ 
+ namespace dxvk {
+   
+@@ -6562,7 +6563,51 @@ namespace dxvk {
+ 
+       m_cmd->beginSecondaryCommandBuffer(inheritance);
+     } else {
+-      // Begin rendering right away on regular GPUs
++      // Gaze-driven VRS: attach a shading rate image to eye passes
++      bool gazeVrsActive = false;
++
++      if (dxvkGazeVrsEnabled(m_device.ptr())) {
++        if (!m_gazeVrs)
++          m_gazeVrs = std::make_unique<DxvkGazeVrs>(m_device.ptr());
++
++        auto& gazeInfo = m_state.om.renderingInfo.gazeVrs;
++        gazeInfo = { VK_STRUCTURE_TYPE_RENDERING_FRAGMENT_SHADING_RATE_ATTACHMENT_INFO_KHR };
++
++        const auto& gazeColor = framebufferInfo.getColorTarget(0u);
++
++        gazeVrsActive = m_gazeVrs->prepare(m_cmd.ptr(),
++          VkExtent2D { fbSize.width, fbSize.height }, fbSize.layers,
++          gazeColor.view ? gazeColor.view->info().format : VK_FORMAT_UNDEFINED,
++          gazeColor.view ? gazeColor.view->image()->info().sampleCount : VK_SAMPLE_COUNT_1_BIT,
++          gazeInfo);
++
++        if (gazeVrsActive) {
++          renderingInfo.pNext = &gazeInfo;
++
++          static uint32_t gazeVpLogCount = 0u;
++
++          if (gazeVpLogCount < 20u) {
++            gazeVpLogCount++;
++
++            const auto& gvp = m_state.vp.viewports[0];
++            const auto& gsc = m_state.vp.scissorRects[0];
++
++            Logger::info(str::format("GazeVRS: pass fb ", fbSize.width, "x", fbSize.height,
++              " viewport(x=", gvp.x, " y=", gvp.y, " w=", gvp.width, " h=", gvp.height, ")",
++              " scissor(x=", gsc.offset.x, " y=", gsc.offset.y, " w=", gsc.extent.width, " h=", gsc.extent.height, ")",
++              " viewports=", m_state.vp.viewportCount));
++          }
++        }
++      }
++
++      if (m_gazeVrs) {
++        VkExtent2D fragmentSize = { 1u, 1u };
++        VkFragmentShadingRateCombinerOpKHR combiner[2] = {
++          VK_FRAGMENT_SHADING_RATE_COMBINER_OP_KEEP_KHR,
++          VK_FRAGMENT_SHADING_RATE_COMBINER_OP_REPLACE_KHR };
++        m_cmd->cmdSetFragmentShadingRate(&fragmentSize, combiner);
++      }
++
+       m_cmd->cmdBeginRendering(DxvkCmdBuffer::ExecBuffer, &renderingInfo);
+     }
+ 
+@@ -6612,6 +6657,38 @@ namespace dxvk {
+       m_cmd->cmdExecuteCommands(1, &cmdBuffer);
+     }
+ 
++    if (g_gazeDot.passActive) {
++      g_gazeDot.passActive = false;
++
++      for (uint32_t i = 0u; i < g_gazeDot.count && i < 16u; i++) {
++        const auto& d = g_gazeDot.dots[i];
++
++        int32_t x0 = std::max(0, d.x - d.r);
++        int32_t y0 = std::max(0, d.y - d.r);
++        int32_t x1 = std::min(g_gazeDot.width,  d.x + d.r);
++        int32_t y1 = std::min(g_gazeDot.height, d.y + d.r);
++
++        if (x1 <= x0 || y1 <= y0)
++          continue;
++
++        VkClearAttachment dotClear = { };
++        dotClear.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
++        dotClear.colorAttachment = 0u;
++        dotClear.clearValue.color.float32[0] = d.rgb[0];
++        dotClear.clearValue.color.float32[1] = d.rgb[1];
++        dotClear.clearValue.color.float32[2] = d.rgb[2];
++        dotClear.clearValue.color.float32[3] = 1.0f;
++
++        VkClearRect dotRect = { };
++        dotRect.rect.offset = { x0, y0 };
++        dotRect.rect.extent = { uint32_t(x1 - x0), uint32_t(y1 - y0) };
++        dotRect.baseArrayLayer = 0u;
++        dotRect.layerCount = 1u;
++
++        m_cmd->cmdClearAttachments(DxvkCmdBuffer::ExecBuffer, 1, &dotClear, 1, &dotRect);
++      }
++    }
++
+     // End actual rendering command
+     m_cmd->cmdEndRendering(DxvkCmdBuffer::ExecBuffer);
+ 
+diff --git a/src/dxvk/dxvk_context.h b/src/dxvk/dxvk_context.h
+index 58d16531..a5de183a 100644
+--- a/src/dxvk/dxvk_context.h
++++ b/src/dxvk/dxvk_context.h
+@@ -6,6 +6,7 @@
+ #include "dxvk_context_state.h"
+ #include "dxvk_descriptor_heap.h"
+ #include "dxvk_descriptor_worker.h"
++#include "dxvk_gaze_vrs.h"
+ #include "dxvk_implicit_resolve.h"
+ #include "dxvk_latency.h"
+ #include "dxvk_objects.h"
+@@ -1334,6 +1335,7 @@ namespace dxvk {
+   private:
+     
+     Rc<DxvkDevice>          m_device;
++    std::unique_ptr<DxvkGazeVrs> m_gazeVrs;
+     DxvkObjects*            m_common;
+ 
+     uint64_t                m_frameCount = 0u;
+diff --git a/src/dxvk/dxvk_device_info.cpp b/src/dxvk/dxvk_device_info.cpp
+index ab1f5634..5a84b422 100644
+--- a/src/dxvk/dxvk_device_info.cpp
++++ b/src/dxvk/dxvk_device_info.cpp
+@@ -48,6 +48,7 @@ namespace dxvk {
+     HANDLE_EXT(khrDeviceFault);                    \
+     HANDLE_EXT(khrDynamicRenderingLocalRead);      \
+     HANDLE_EXT(khrExternalMemoryWin32);            \
++    HANDLE_EXT(khrFragmentShadingRate);            \
+     HANDLE_EXT(khrExternalSemaphoreWin32);         \
+     HANDLE_EXT(khrIncrementalPresent);             \
+     HANDLE_EXT(khrLoadStoreOpNone);                \
+@@ -92,6 +93,7 @@ namespace dxvk {
+     HANDLE_EXT(extTransformFeedback);              \
+     HANDLE_EXT(extVertexAttributeDivisor);         \
+     HANDLE_EXT(khrDeviceFault);                    \
++    HANDLE_EXT(khrFragmentShadingRate);            \
+     HANDLE_EXT(khrMaintenance5);                   \
+     HANDLE_EXT(khrMaintenance6);                   \
+     HANDLE_EXT(khrMaintenance7);                   \
+@@ -1042,6 +1044,9 @@ namespace dxvk {
+       ENABLE_EXT_FEATURE(khrDeviceFault, deviceFault, false),
+       ENABLE_EXT_FEATURE(khrDeviceFault, deviceFaultVendorBinary, false),
+ 
++      /* Gaze-driven VRS */
++      ENABLE_EXT_FEATURE(khrFragmentShadingRate, attachmentFragmentShadingRate, false),
++
+       /* Tiler stuff */
+       ENABLE_EXT_FEATURE(khrDynamicRenderingLocalRead, dynamicRenderingLocalRead, false),
+ 
+diff --git a/src/dxvk/dxvk_device_info.h b/src/dxvk/dxvk_device_info.h
+index 40dae678..0d7a2c59 100644
+--- a/src/dxvk/dxvk_device_info.h
++++ b/src/dxvk/dxvk_device_info.h
+@@ -38,6 +38,7 @@ namespace dxvk {
+     VkPhysicalDeviceSampleLocationsPropertiesEXT              extSampleLocations              = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SAMPLE_LOCATIONS_PROPERTIES_EXT };
+     VkPhysicalDeviceTransformFeedbackPropertiesEXT            extTransformFeedback            = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_TRANSFORM_FEEDBACK_PROPERTIES_EXT };
+     VkPhysicalDeviceVertexAttributeDivisorPropertiesEXT       extVertexAttributeDivisor       = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VERTEX_ATTRIBUTE_DIVISOR_PROPERTIES_EXT };
++    VkPhysicalDeviceFragmentShadingRatePropertiesKHR          khrFragmentShadingRate          = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FRAGMENT_SHADING_RATE_PROPERTIES_KHR };
+     VkPhysicalDeviceFaultPropertiesKHR                        khrDeviceFault                  = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FAULT_PROPERTIES_KHR };
+     VkPhysicalDeviceMaintenance5PropertiesKHR                 khrMaintenance5                 = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MAINTENANCE_5_PROPERTIES_KHR };
+     VkPhysicalDeviceMaintenance6PropertiesKHR                 khrMaintenance6                 = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MAINTENANCE_6_PROPERTIES_KHR };
+@@ -89,6 +90,7 @@ namespace dxvk {
+     VkPhysicalDeviceVertexAttributeDivisorFeaturesEXT         extVertexAttributeDivisor       = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VERTEX_ATTRIBUTE_DIVISOR_FEATURES };
+     VkBool32                                                  khrCalibratedTimestamps         = VK_FALSE;
+     VkPhysicalDeviceFaultFeaturesKHR                          khrDeviceFault                  = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FAULT_FEATURES_KHR };
++    VkPhysicalDeviceFragmentShadingRateFeaturesKHR            khrFragmentShadingRate          = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FRAGMENT_SHADING_RATE_FEATURES_KHR };
+     VkPhysicalDeviceDynamicRenderingLocalReadFeatures         khrDynamicRenderingLocalRead    = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DYNAMIC_RENDERING_LOCAL_READ_FEATURES_KHR };
+     VkBool32                                                  khrExternalMemoryWin32          = VK_FALSE;
+     VkBool32                                                  khrExternalSemaphoreWin32       = VK_FALSE;
+@@ -166,6 +168,7 @@ namespace dxvk {
+     VkExtensionProperties extVertexAttributeDivisor         = vk::makeExtension(VK_EXT_VERTEX_ATTRIBUTE_DIVISOR_EXTENSION_NAME);
+     VkExtensionProperties khrCalibratedTimestamps           = vk::makeExtension(VK_KHR_CALIBRATED_TIMESTAMPS_EXTENSION_NAME);
+     VkExtensionProperties khrDeviceFault                    = vk::makeExtension(VK_KHR_DEVICE_FAULT_EXTENSION_NAME);
++    VkExtensionProperties khrFragmentShadingRate            = vk::makeExtension(VK_KHR_FRAGMENT_SHADING_RATE_EXTENSION_NAME);
+     VkExtensionProperties khrDynamicRenderingLocalRead      = vk::makeExtension(VK_KHR_DYNAMIC_RENDERING_LOCAL_READ_EXTENSION_NAME);
+     VkExtensionProperties khrExternalMemoryWin32            = vk::makeExtension(VK_KHR_EXTERNAL_MEMORY_WIN32_EXTENSION_NAME);
+     VkExtensionProperties khrExternalSemaphoreWin32         = vk::makeExtension(VK_KHR_EXTERNAL_SEMAPHORE_WIN32_EXTENSION_NAME);
+diff --git a/src/dxvk/dxvk_framebuffer.h b/src/dxvk/dxvk_framebuffer.h
+index 76642cda..7f0e3bfd 100644
+--- a/src/dxvk/dxvk_framebuffer.h
++++ b/src/dxvk/dxvk_framebuffer.h
+@@ -70,6 +70,7 @@ namespace dxvk {
+     VkRenderingAttachmentInfo depth = { };
+     VkRenderingAttachmentInfo stencil = { };
+     VkRenderingInfo rendering = { };
++    VkRenderingFragmentShadingRateAttachmentInfoKHR gazeVrs = { };
+   };
+ 
+ 
+diff --git a/src/dxvk/dxvk_gaze_dot.h b/src/dxvk/dxvk_gaze_dot.h
+new file mode 100644
+index 00000000..4a85f2b7
+--- /dev/null
++++ b/src/dxvk/dxvk_gaze_dot.h
+@@ -0,0 +1,31 @@
++#pragma once
++
++#include <cstdint>
++
++namespace dxvk
++{
++
++  struct GazeDotRect
++  {
++    int32_t x = 0, y = 0, r = 24; // center and half-size, framebuffer pixels
++    float rgb[3] = {1.0f, 0.0f, 1.0f};
++  };
++
++  // Debug overlay drawn at the end of eye passes with vkCmdClearAttachments.
++  struct GazeDotState
++  {
++    bool passActive = false;
++    int32_t width = 0;
++    int32_t height = 0;
++
++    int32_t x[2] = {0, 0};
++    int32_t y[2] = {0, 0};
++    int32_t radius = 24;
++
++    uint32_t count = 0;
++    GazeDotRect dots[16];
++  };
++
++  inline GazeDotState g_gazeDot;
++
++}
+\ No newline at end of file
+diff --git a/src/dxvk/dxvk_gaze_vrs.cpp b/src/dxvk/dxvk_gaze_vrs.cpp
+new file mode 100644
+index 00000000..4f9ffd84
+--- /dev/null
++++ b/src/dxvk/dxvk_gaze_vrs.cpp
+@@ -0,0 +1,672 @@
++#include <algorithm>
++#include <atomic>
++#include <cmath>
++#include <cstdio>
++#include <cstdlib>
++#include <vector>
++
++#include "dxvk_cmdlist.h"
++#include "dxvk_device.h"
++#include "dxvk_gaze_dot.h"
++#include "dxvk_gaze_vrs.h"
++
++#include "../util/log/log.h"
++#include "../util/util_env.h"
++#include "../util/util_string.h"
++
++#ifdef _WIN32
++#include "../util/util_win32_compat.h"
++#endif
++
++namespace dxvk
++{
++
++  static constexpr uint32_t GazeMagic = 0x455a4147u; // "GAZE"
++
++  static float getEnvFloat(const char *name, float fallback)
++  {
++    std::string v = env::getEnvVar(name);
++    return v.empty() ? fallback : float(std::atof(v.c_str()));
++  }
++
++  // -1 = unset, 0 / 1 = forced
++  static int getEnvTri(const char *name)
++  {
++    std::string v = env::getEnvVar(name);
++    if (v.empty())
++      return -1;
++    return v == "1" ? 1 : 0;
++  }
++
++  bool dxvkGazeVrsEnabled(const DxvkDevice *device)
++  {
++    static const bool requested = env::getEnvVar("DXVK_GAZE_VRS") == "1";
++
++    return requested && device->features().khrFragmentShadingRate.attachmentFragmentShadingRate;
++  }
++
++  DxvkGazeVrs::DxvkGazeVrs(DxvkDevice *device)
++      : m_device(device)
++  {
++    m_r1 = getEnvFloat("DXVK_GAZE_R1", m_r1);
++    m_r2 = getEnvFloat("DXVK_GAZE_R2", m_r2);
++    m_minSize = uint32_t(getEnvFloat("DXVK_GAZE_MINSIZE", float(m_minSize)));
++    m_flipY = env::getEnvVar("DXVK_GAZE_FLIP_Y") == "1";
++    m_swapEyes = env::getEnvVar("DXVK_GAZE_SWAP_EYES") == "1";
++    m_debug = env::getEnvVar("DXVK_GAZE_DEBUG") == "1";
++    m_dot = env::getEnvVar("DXVK_GAZE_DOT") == "1";
++    m_dotRadius = int32_t(getEnvFloat("DXVK_GAZE_DOT_RADIUS", float(m_dotRadius)));
++    m_path = env::getEnvVar("DXVK_GAZE_FILE");
++
++    m_gainY = getEnvFloat("DXVK_GAZE_GAIN_Y", 1.0f);
++    m_onlySamples = uint32_t(getEnvFloat("DXVK_GAZE_SAMPLES", 0.0f));
++    m_onlyFormat = uint32_t(getEnvFloat("DXVK_GAZE_FMT", 0.0f));
++
++    // DXVK_GAZE_FAKE=x|y|circle: ignore WiVRn and sweep a synthetic gaze (6 s period)
++    {
++      std::string fake = env::getEnvVar("DXVK_GAZE_FAKE");
++      m_fake = fake == "x" ? 1 : fake == "y"    ? 2
++                             : fake == "circle" ? 3
++                             : fake == "fixed"  ? 4
++                             : fake == "grid"   ? 5
++                                                : 0;
++      m_fixedY = getEnvFloat("DXVK_GAZE_FIXED_Y", m_fixedY);
++    }
++
++    // Raw shading rate code for the outer zone: (log2(w) << 2) | log2(h)
++    // 5 = 2x2, 6 = 2x4, 9 = 4x2, 10 = 4x4. DXVK_GAZE_MAXRATE kept as alias.
++    float coarse = getEnvFloat("DXVK_GAZE_COARSE", getEnvFloat("DXVK_GAZE_MAXRATE", float(m_coarse)));
++    m_coarse = uint32_t(coarse);
++
++    m_forceFlipX[0] = getEnvTri("DXVK_GAZE_FLIPX_L");
++    m_forceFlipX[1] = getEnvTri("DXVK_GAZE_FLIPX_R");
++    m_forceFlipY[0] = getEnvTri("DXVK_GAZE_FLIPY_L");
++    m_forceFlipY[1] = getEnvTri("DXVK_GAZE_FLIPY_R");
++
++    std::string forced = env::getEnvVar("DXVK_GAZE_SIZE");
++    if (!forced.empty())
++      std::sscanf(forced.c_str(), "%ux%u", &m_forceW, &m_forceH);
++
++    if (m_path.empty())
++      m_path = "Z:\\dev\\shm\\wivrn_gaze";
++
++    m_ok = createResources();
++
++    Logger::info(str::format("GazeVRS: init ", m_ok ? "ok" : "FAILED",
++                             ", texel ", m_texel.width, "x", m_texel.height,
++                             ", r1=", m_r1, " r2=", m_r2, " coarse=", m_coarse,
++                             ", file=", m_path));
++  }
++
++  DxvkGazeVrs::~DxvkGazeVrs()
++  {
++#ifdef _WIN32
++    if (m_shm)
++      UnmapViewOfFile(const_cast<GazeShm *>(m_shm));
++    if (m_map)
++      CloseHandle(HANDLE(m_map));
++    if (m_file)
++      CloseHandle(HANDLE(m_file));
++#endif
++  }
++
++  bool DxvkGazeVrs::createResources()
++  {
++    auto vk = m_device->vkd();
++    const auto &memProps = m_device->adapter()->memoryProperties();
++
++    const auto &fsrProps = m_device->properties().khrFragmentShadingRate;
++
++    if (fsrProps.minFragmentShadingRateAttachmentTexelSize.width && fsrProps.minFragmentShadingRateAttachmentTexelSize.height)
++      m_texel = fsrProps.minFragmentShadingRateAttachmentTexelSize;
++
++    auto findType = [&](uint32_t bits, VkMemoryPropertyFlags flags) -> int32_t
++    {
++      for (uint32_t i = 0; i < memProps.memoryTypeCount; i++)
++      {
++        if ((bits & (1u << i)) && (memProps.memoryTypes[i].propertyFlags & flags) == flags)
++          return int32_t(i);
++      }
++      return -1;
++    };
++
++    VkImageCreateInfo imageInfo = {VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
++    imageInfo.imageType = VK_IMAGE_TYPE_2D;
++    imageInfo.format = VK_FORMAT_R8_UINT;
++    imageInfo.extent = {MaxTiles, MaxTiles, 1u};
++    imageInfo.mipLevels = 1u;
++    imageInfo.arrayLayers = MaxLayers;
++    imageInfo.samples = VK_SAMPLE_COUNT_1_BIT;
++    imageInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
++    imageInfo.usage = VK_IMAGE_USAGE_FRAGMENT_SHADING_RATE_ATTACHMENT_BIT_KHR | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
++    imageInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
++    imageInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
++
++    if (vk->vkCreateImage(vk->device(), &imageInfo, nullptr, &m_image))
++      return false;
++
++    VkMemoryRequirements req = {};
++    vk->vkGetImageMemoryRequirements(vk->device(), m_image, &req);
++
++    int32_t type = findType(req.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
++    if (type < 0)
++      return false;
++
++    VkMemoryAllocateInfo allocInfo = {VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
++    allocInfo.allocationSize = req.size;
++    allocInfo.memoryTypeIndex = uint32_t(type);
++
++    if (vk->vkAllocateMemory(vk->device(), &allocInfo, nullptr, &m_imageMem) || vk->vkBindImageMemory(vk->device(), m_image, m_imageMem, 0))
++      return false;
++
++    VkImageViewCreateInfo viewInfo = {VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
++    viewInfo.image = m_image;
++    viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D_ARRAY;
++    viewInfo.format = VK_FORMAT_R8_UINT;
++    viewInfo.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0u, 1u, 0u, MaxLayers};
++
++    if (vk->vkCreateImageView(vk->device(), &viewInfo, nullptr, &m_view))
++      return false;
++
++    VkBufferCreateInfo bufferInfo = {VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
++    bufferInfo.size = VkDeviceSize(MaxTiles) * MaxTiles * MaxLayers;
++    bufferInfo.usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
++    bufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
++
++    if (vk->vkCreateBuffer(vk->device(), &bufferInfo, nullptr, &m_buffer))
++      return false;
++
++    vk->vkGetBufferMemoryRequirements(vk->device(), m_buffer, &req);
++    type = findType(req.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
++    if (type < 0)
++      return false;
++
++    allocInfo.allocationSize = req.size;
++    allocInfo.memoryTypeIndex = uint32_t(type);
++
++    if (vk->vkAllocateMemory(vk->device(), &allocInfo, nullptr, &m_bufferMem) || vk->vkBindBufferMemory(vk->device(), m_buffer, m_bufferMem, 0))
++      return false;
++
++    return true;
++  }
++
++  void DxvkGazeVrs::openSource()
++  {
++#ifdef _WIN32
++    auto now = std::chrono::steady_clock::now();
++
++    if (now < m_nextOpen)
++      return;
++
++    m_nextOpen = now + std::chrono::seconds(2);
++
++    HANDLE file = CreateFileA(m_path.c_str(), GENERIC_READ,
++                              FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
++                              nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
++
++    if (file == INVALID_HANDLE_VALUE)
++      return;
++
++    if (GetFileSize(file, nullptr) < sizeof(GazeShm))
++    {
++      CloseHandle(file);
++      return;
++    }
++
++    HANDLE map = CreateFileMappingA(file, nullptr, PAGE_READONLY, 0, 0, nullptr);
++
++    if (!map)
++    {
++      CloseHandle(file);
++      return;
++    }
++
++    void *view = MapViewOfFile(map, FILE_MAP_READ, 0, 0, 0);
++
++    if (!view)
++    {
++      CloseHandle(map);
++      CloseHandle(file);
++      return;
++    }
++
++    m_file = file;
++    m_map = map;
++    m_shm = static_cast<const volatile GazeShm *>(view);
++
++    Logger::info("GazeVRS: gaze source opened");
++#endif
++  }
++
++  bool DxvkGazeVrs::readGaze(Gaze &g)
++  {
++    if (!m_shm)
++    {
++      openSource();
++
++      if (!m_shm)
++        return false;
++    }
++
++    for (uint32_t i = 0; i < 4u; i++)
++    {
++      uint32_t s1 = m_shm->seq;
++
++      if (s1 & 1u)
++        continue;
++
++      std::atomic_thread_fence(std::memory_order_acquire);
++
++      uint32_t magic = m_shm->magic;
++      uint32_t valid = m_shm->valid;
++
++      for (uint32_t e = 0; e < 2u; e++)
++      {
++        g.cx[e] = m_shm->cx[e];
++        g.cy[e] = m_shm->cy[e];
++        g.flipX[e] = m_shm->flipX[e];
++        g.flipY[e] = m_shm->flipY[e];
++      }
++
++      std::atomic_thread_fence(std::memory_order_acquire);
++
++      if (s1 != m_shm->seq)
++        continue;
++
++      if (magic != GazeMagic || !valid)
++        return false;
++
++      for (uint32_t e = 0; e < 2u; e++)
++      {
++        if (!std::isfinite(g.cx[e]) || !std::isfinite(g.cy[e]))
++          return false;
++
++        g.cx[e] = std::clamp(g.cx[e], 0.0f, 1.0f);
++        g.cy[e] = std::clamp(g.cy[e], 0.0f, 1.0f);
++      }
++
++      return true;
++    }
++
++    return false;
++  }
++
++  bool DxvkGazeVrs::prepare(
++      DxvkCommandList *cmd,
++      VkExtent2D extent,
++      uint32_t layers,
++      VkFormat colorFormat,
++      VkSampleCountFlagBits samples,
++      VkRenderingFragmentShadingRateAttachmentInfoKHR &info)
++  {
++    // Supported eye image layouts:
++    //  - array: 2 layers, one eye per layer
++    //  - sbs:   1 layer, both eyes side by side (left half / right half)
++    bool candidate = false;
++    bool sbs = false;
++
++    if (m_ok)
++    {
++      if (m_forceW)
++      {
++        candidate = extent.width == m_forceW && extent.height == m_forceH && layers <= MaxLayers;
++        sbs = candidate && layers == 1u && extent.width * 10u >= extent.height * 18u;
++      }
++      else if (layers == MaxLayers)
++      {
++        candidate = extent.width >= m_minSize && extent.height >= m_minSize;
++      }
++      else if (layers == 1u)
++      {
++        sbs = extent.width * 10u >= extent.height * 18u && extent.height >= m_minSize;
++        candidate = sbs;
++      }
++    }
++
++    // Depth-only passes have no color target: no dots, and VRS there would desync depth from the color pass
++    if (colorFormat == VK_FORMAT_UNDEFINED)
++      candidate = false;
++
++    // Optional pass filters, to pick the scene pass out of several same-sized passes
++    if (candidate && m_onlySamples && uint32_t(samples) != m_onlySamples)
++      candidate = false;
++
++    if (candidate && m_onlyFormat && uint32_t(colorFormat) != m_onlyFormat)
++      candidate = false;
++
++    auto now = std::chrono::steady_clock::now();
++
++    if (m_debug)
++    {
++      m_shapes[{extent.width, extent.height, layers, uint32_t(colorFormat), uint32_t(samples)}]++;
++
++      if (now >= m_nextSummary)
++      {
++        if (m_nextSummary.time_since_epoch().count() != 0)
++        {
++          Logger::info("GazeVRS: --- passes in last 5s: WxH layers fmt samples count ---");
++          for (const auto &e : m_shapes)
++          {
++            if (e.second < 10u)
++              continue;
++            Logger::info(str::format("GazeVRS:   ", e.first[0], "x", e.first[1],
++                                     " layers=", e.first[2], " fmt=", e.first[3],
++                                     " samples=", e.first[4], " count=", e.second));
++          }
++        }
++        m_shapes.clear();
++        m_nextSummary = now + std::chrono::seconds(5);
++      }
++    }
++
++    if (!candidate)
++      return false;
++
++    const uint32_t tilesX = (extent.width + m_texel.width - 1u) / m_texel.width;
++    const uint32_t tilesY = (extent.height + m_texel.height - 1u) / m_texel.height;
++
++    if (tilesX > MaxTiles || tilesY > MaxTiles)
++      return false;
++
++    Gaze g = {};
++
++    if (m_fake)
++    {
++      float t = std::chrono::duration<float>(now.time_since_epoch()).count();
++      float a = 0.35f * std::sin(t * 6.2831853f / 6.0f);
++      float b = 0.35f * std::cos(t * 6.2831853f / 6.0f);
++      float x = 0.5f, y = 0.5f;
++
++      if (m_fake == 1)
++        x += a;
++      else if (m_fake == 2)
++        y += a;
++      else if (m_fake == 4)
++        y = m_fixedY; // fixed spot, no motion
++      else if (m_fake == 5)
++      {
++      } // grid: fixed center
++      else
++      {
++        x += a;
++        y += b;
++      }
++
++      for (uint32_t e = 0; e < 2u; e++)
++      {
++        g.cx[e] = x;
++        g.cy[e] = y;
++      }
++    }
++    else if (!readGaze(g))
++    {
++      if (m_debug && !m_loggedNoGaze)
++      {
++        m_loggedNoGaze = true;
++        Logger::info("GazeVRS: candidate pass but no valid gaze data");
++      }
++      return false;
++    }
++
++    for (uint32_t e = 0; e < 2u; e++)
++    {
++      m_winMin[e] = std::min(m_winMin[e], g.cy[e]);
++      m_winMax[e] = std::max(m_winMax[e], g.cy[e]);
++      m_winMinX[e] = std::min(m_winMinX[e], g.cx[e]);
++      m_winMaxX[e] = std::max(m_winMaxX[e], g.cx[e]);
++    }
++
++    if (m_gainY != 1.0f)
++    {
++      for (uint32_t e = 0; e < 2u; e++)
++        g.cy[e] = std::clamp(0.5f + (g.cy[e] - 0.5f) * m_gainY, 0.0f, 1.0f);
++    }
++
++    if (m_swapEyes)
++    {
++      std::swap(g.cx[0], g.cx[1]);
++      std::swap(g.cy[0], g.cy[1]);
++      std::swap(g.flipX[0], g.flipX[1]);
++      std::swap(g.flipY[0], g.flipY[1]);
++    }
++
++    // Fovea position per eye in framebuffer space (0..1, origin top-left of the eye image).
++    // WiVRn reports display space and tells us whether the source image is mirrored.
++    float fx[2], fy[2];
++    uint32_t flags = 0u;
++
++    for (uint32_t e = 0; e < 2u; e++)
++    {
++      bool flipX = m_forceFlipX[e] >= 0 ? m_forceFlipX[e] != 0 : g.flipX[e] != 0;
++      bool flipY = m_forceFlipY[e] >= 0 ? m_forceFlipY[e] != 0 : g.flipY[e] != 0;
++
++      if (m_flipY)
++        flipY = !flipY;
++
++      fx[e] = flipX ? 1.0f - g.cx[e] : g.cx[e];
++      fy[e] = flipY ? 1.0f - g.cy[e] : g.cy[e];
++
++      flags |= (flipX ? 1u : 0u) << (e * 2u) | (flipY ? 1u : 0u) << (e * 2u + 1u);
++    }
++
++    const uint32_t usedLayers = sbs ? 1u : MaxLayers;
++    const float eyeW = sbs ? float(extent.width) * 0.5f : float(extent.width);
++
++    const std::array<int32_t, 4> center = {
++        int32_t(fx[0] * eyeW), int32_t(fy[0] * float(extent.height)),
++        int32_t(fx[1] * eyeW), int32_t(fy[1] * float(extent.height))};
++
++    // Quantize to tile granularity so we only re-upload when something visible changes
++    const std::array<int32_t, 4> centerTiles = {
++        center[0] / int32_t(m_texel.width), center[1] / int32_t(m_texel.height),
++        center[2] / int32_t(m_texel.width), center[3] / int32_t(m_texel.height)};
++
++    const bool upload = !m_layoutInit || tilesX != m_lastTilesX || tilesY != m_lastTilesY || flags != m_lastFlags || centerTiles != m_lastCenter;
++
++    if (m_debug && now >= m_nextGazeLog)
++    {
++      m_nextGazeLog = now + std::chrono::seconds(1);
++      Logger::info(str::format("GazeVRS: ", sbs ? "sbs " : "array ", extent.width, "x", extent.height,
++                               " display L(", g.cx[0], ",", g.cy[0], ") R(", g.cx[1], ",", g.cy[1], ")",
++                               " wivrn flipX=", g.flipX[0], g.flipX[1], " flipY=", g.flipY[0], g.flipY[1],
++                               " -> fb L(", fx[0], ",", fy[0], ") R(", fx[1], ",", fy[1], ")",
++                               " tiles ", tilesX, "x", tilesY));
++      Logger::info(str::format("GazeVRS: raw range last 1s: cx L[", m_winMinX[0], ",", m_winMaxX[0],
++                               "] R[", m_winMinX[1], ",", m_winMaxX[1], "]  cy L[", m_winMin[0], ",", m_winMax[0],
++                               "] R[", m_winMin[1], ",", m_winMax[1], "]  gainY=", m_gainY));
++
++      for (uint32_t e = 0; e < 2u; e++)
++      {
++        m_winMin[e] = m_winMinX[e] = 1.0f;
++        m_winMax[e] = m_winMaxX[e] = 0.0f;
++      }
++    }
++
++    // Debug overlay (sbs only): colored squares drawn at the end of the pass.
++    //  - normal: two magenta dots where we place the fovea
++    //  - FAKE=grid: 8 differently colored squares at known framebuffer positions
++    if ((m_dot || m_fake == 5) && sbs)
++    {
++      g_gazeDot.passActive = true;
++      g_gazeDot.width = int32_t(extent.width);
++      g_gazeDot.height = int32_t(extent.height);
++      g_gazeDot.radius = m_dotRadius;
++      g_gazeDot.x[0] = center[0];
++      g_gazeDot.y[0] = center[1];
++      g_gazeDot.x[1] = int32_t(eyeW) + center[2];
++      g_gazeDot.y[1] = center[3];
++      g_gazeDot.count = 0;
++
++      auto add = [&](float px, float py, int32_t r, float cr, float cg, float cb)
++      {
++        if (g_gazeDot.count >= 16u)
++          return;
++        auto &d = g_gazeDot.dots[g_gazeDot.count++];
++        d.x = int32_t(px * float(extent.width));
++        d.y = int32_t(py * float(extent.height));
++        d.r = r;
++        d.rgb[0] = cr;
++        d.rgb[1] = cg;
++        d.rgb[2] = cb;
++      };
++
++      if (m_fake == 5)
++      {
++        const int32_t sz = 70;
++        add(0.03f, 0.06f, sz, 1.0f, 0.0f, 0.0f); // top-left corner      red
++        add(0.97f, 0.06f, sz, 0.0f, 1.0f, 0.0f); // top-right corner     green
++        add(0.03f, 0.94f, sz, 0.0f, 0.0f, 1.0f); // bottom-left corner   blue
++        add(0.97f, 0.94f, sz, 1.0f, 1.0f, 0.0f); // bottom-right corner  yellow
++        add(0.25f, 0.50f, sz, 1.0f, 1.0f, 1.0f); // center of left half  white
++        add(0.75f, 0.50f, sz, 1.0f, 0.0f, 1.0f); // center of right half magenta
++        add(0.25f, 0.12f, sz, 0.0f, 1.0f, 1.0f); // top of left half     cyan
++        add(0.75f, 0.12f, sz, 1.0f, 0.5f, 0.0f); // top of right half    orange
++      }
++      else
++      {
++        add(float(g_gazeDot.x[0]) / float(extent.width), float(g_gazeDot.y[0]) / float(extent.height), m_dotRadius, 1.0f, 0.0f, 1.0f);
++        add(float(g_gazeDot.x[1]) / float(extent.width), float(g_gazeDot.y[1]) / float(extent.height), m_dotRadius, 1.0f, 0.0f, 1.0f);
++      }
++    }
++
++    VkImageSubresourceRange allLayers = {VK_IMAGE_ASPECT_COLOR_BIT, 0u, 1u, 0u, MaxLayers};
++
++    if (upload)
++    {
++      const uint32_t tileCount = tilesX * tilesY;
++      const uint32_t layerStride = (tileCount + 3u) & ~3u;
++      std::vector<uint8_t> data(size_t(layerStride) * usedLayers, 0u);
++
++      const uint32_t mid = std::min<uint32_t>(5u, m_coarse);
++
++      for (uint32_t l = 0; l < usedLayers; l++)
++      {
++        for (uint32_t ty = 0; ty < tilesY; ty++)
++        {
++          for (uint32_t tx = 0; tx < tilesX; tx++)
++          {
++            float px = (float(tx) + 0.5f) * float(m_texel.width);
++            float py = (float(ty) + 0.5f) * float(m_texel.height);
++
++            uint32_t eye = l;
++            float lx = px;
++
++            if (sbs)
++            {
++              eye = px < eyeW ? 0u : 1u;
++              lx = px - float(eye) * eyeW;
++            }
++
++            float cxp = fx[eye] * eyeW;
++            float cyp = fy[eye] * float(extent.height);
++            float d = std::hypot(lx - cxp, py - cyp) / std::min(eyeW, float(extent.height));
++
++            uint8_t rate = 0u;
++
++            if (d >= m_r1)
++              rate = uint8_t(d >= m_r2 ? m_coarse : mid);
++
++            data[size_t(l) * layerStride + size_t(ty) * tilesX + tx] = rate;
++          }
++        }
++      }
++
++      VkImageMemoryBarrier2 imgBarrier = {VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2};
++      imgBarrier.srcStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
++      imgBarrier.srcAccessMask = VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT;
++      imgBarrier.dstStageMask = VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT;
++      imgBarrier.dstAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
++      imgBarrier.oldLayout = m_layoutInit ? VK_IMAGE_LAYOUT_GENERAL : VK_IMAGE_LAYOUT_UNDEFINED;
++      imgBarrier.newLayout = VK_IMAGE_LAYOUT_GENERAL;
++      imgBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
++      imgBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
++      imgBarrier.image = m_image;
++      imgBarrier.subresourceRange = allLayers;
++
++      VkBufferMemoryBarrier2 bufBarrier = {VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2};
++      bufBarrier.srcStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
++      bufBarrier.srcAccessMask = VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT;
++      bufBarrier.dstStageMask = VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT;
++      bufBarrier.dstAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
++      bufBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
++      bufBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
++      bufBarrier.buffer = m_buffer;
++      bufBarrier.offset = 0u;
++      bufBarrier.size = VK_WHOLE_SIZE;
++
++      VkDependencyInfo dep = {VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
++      dep.bufferMemoryBarrierCount = 1u;
++      dep.pBufferMemoryBarriers = &bufBarrier;
++      dep.imageMemoryBarrierCount = 1u;
++      dep.pImageMemoryBarriers = &imgBarrier;
++      cmd->cmdPipelineBarrier(DxvkCmdBuffer::ExecBuffer, &dep);
++
++      for (size_t off = 0u; off < data.size(); off += 65536u)
++      {
++        size_t chunk = std::min<size_t>(65536u, data.size() - off);
++        cmd->cmdUpdateBuffer(DxvkCmdBuffer::ExecBuffer, m_buffer, off, chunk, data.data() + off);
++      }
++
++      VkBufferMemoryBarrier2 bufBarrier2 = bufBarrier;
++      bufBarrier2.srcStageMask = VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT;
++      bufBarrier2.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
++      bufBarrier2.dstStageMask = VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT;
++      bufBarrier2.dstAccessMask = VK_ACCESS_2_TRANSFER_READ_BIT;
++
++      VkDependencyInfo dep2 = {VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
++      dep2.bufferMemoryBarrierCount = 1u;
++      dep2.pBufferMemoryBarriers = &bufBarrier2;
++      cmd->cmdPipelineBarrier(DxvkCmdBuffer::ExecBuffer, &dep2);
++
++      std::array<VkBufferImageCopy2, MaxLayers> regions = {};
++
++      for (uint32_t l = 0; l < usedLayers; l++)
++      {
++        regions[l].sType = VK_STRUCTURE_TYPE_BUFFER_IMAGE_COPY_2;
++        regions[l].bufferOffset = VkDeviceSize(l) * layerStride;
++        regions[l].bufferRowLength = 0u;
++        regions[l].bufferImageHeight = 0u;
++        regions[l].imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0u, l, 1u};
++        regions[l].imageOffset = {0, 0, 0};
++        regions[l].imageExtent = {tilesX, tilesY, 1u};
++      }
++
++      VkCopyBufferToImageInfo2 copyInfo = {VK_STRUCTURE_TYPE_COPY_BUFFER_TO_IMAGE_INFO_2};
++      copyInfo.srcBuffer = m_buffer;
++      copyInfo.dstImage = m_image;
++      copyInfo.dstImageLayout = VK_IMAGE_LAYOUT_GENERAL;
++      copyInfo.regionCount = usedLayers;
++      copyInfo.pRegions = regions.data();
++      cmd->cmdCopyBufferToImage(DxvkCmdBuffer::ExecBuffer, &copyInfo);
++
++      m_layoutInit = true;
++      m_lastTilesX = tilesX;
++      m_lastTilesY = tilesY;
++      m_lastFlags = flags;
++      m_lastCenter = centerTiles;
++    }
++
++    VkImageMemoryBarrier2 useBarrier = {VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2};
++    useBarrier.srcStageMask = VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT;
++    useBarrier.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
++    useBarrier.dstStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADING_RATE_ATTACHMENT_BIT_KHR;
++    useBarrier.dstAccessMask = VK_ACCESS_2_FRAGMENT_SHADING_RATE_ATTACHMENT_READ_BIT_KHR;
++    useBarrier.oldLayout = VK_IMAGE_LAYOUT_GENERAL;
++    useBarrier.newLayout = VK_IMAGE_LAYOUT_GENERAL;
++    useBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
++    useBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
++    useBarrier.image = m_image;
++    useBarrier.subresourceRange = allLayers;
++
++    VkDependencyInfo useDep = {VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
++    useDep.imageMemoryBarrierCount = 1u;
++    useDep.pImageMemoryBarriers = &useBarrier;
++    cmd->cmdPipelineBarrier(DxvkCmdBuffer::ExecBuffer, &useDep);
++
++    info.imageView = m_view;
++    info.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
++    info.shadingRateAttachmentTexelSize = m_texel;
++    return true;
++  }
++
++}
+\ No newline at end of file
+diff --git a/src/dxvk/dxvk_gaze_vrs.h b/src/dxvk/dxvk_gaze_vrs.h
+new file mode 100644
+index 00000000..2e593896
+--- /dev/null
++++ b/src/dxvk/dxvk_gaze_vrs.h
+@@ -0,0 +1,116 @@
++#pragma once
++
++#include <array>
++#include <chrono>
++#include <cstdint>
++#include <map>
++#include <string>
++#include <vector>
++
++#include "dxvk_include.h"
++
++namespace dxvk
++{
++
++  class DxvkDevice;
++  class DxvkCommandList;
++
++  bool dxvkGazeVrsEnabled(const DxvkDevice *device);
++
++  class DxvkGazeVrs
++  {
++
++  public:
++    explicit DxvkGazeVrs(DxvkDevice *device);
++    ~DxvkGazeVrs();
++
++    bool prepare(
++        DxvkCommandList *cmd,
++        VkExtent2D extent,
++        uint32_t layers,
++        VkFormat colorFormat,
++        VkSampleCountFlagBits samples,
++        VkRenderingFragmentShadingRateAttachmentInfoKHR &info);
++
++  private:
++    // Must match gaze_shm_data in WiVRn's foveation.cpp
++    struct GazeShm
++    {
++      uint32_t magic; // 'GAZE'
++      uint32_t seq;   // even = stable
++      float cx[2];    // fovea center, fraction of eye width,  display space
++      float cy[2];    // fovea center, fraction of eye height, display space, from top
++      uint32_t valid;
++      int32_t flipX[2]; // source rect has negative width
++      int32_t flipY[2]; // source rect has negative height
++    };
++
++    struct Gaze
++    {
++      float cx[2];
++      float cy[2];
++      int32_t flipX[2];
++      int32_t flipY[2];
++    };
++
++    static constexpr uint32_t MaxTiles = 512u;
++    static constexpr uint32_t MaxLayers = 2u;
++
++    DxvkDevice *m_device = nullptr;
++
++    VkImage m_image = VK_NULL_HANDLE;
++    VkImageView m_view = VK_NULL_HANDLE;
++    VkDeviceMemory m_imageMem = VK_NULL_HANDLE;
++    VkBuffer m_buffer = VK_NULL_HANDLE;
++    VkDeviceMemory m_bufferMem = VK_NULL_HANDLE;
++    bool m_ok = false;
++    bool m_layoutInit = false;
++
++    VkExtent2D m_texel = {16u, 16u};
++
++    void *m_file = nullptr;
++    void *m_map = nullptr;
++    const volatile GazeShm *m_shm = nullptr;
++    std::chrono::steady_clock::time_point m_nextOpen = {};
++
++    uint32_t m_lastTilesX = 0u;
++    uint32_t m_lastTilesY = 0u;
++    uint32_t m_lastFlags = ~0u;
++    std::array<int32_t, 4> m_lastCenter = {-1, -1, -1, -1};
++
++    // Configuration
++    float m_r1 = 0.20f;
++    float m_r2 = 0.40f;
++    uint32_t m_coarse = 5u; // raw rate code of the outer zone, 5 = 2x2, 10 = 4x4
++    uint32_t m_minSize = 700u;
++    bool m_flipY = false; // extra global Y flip
++    bool m_swapEyes = false;
++    int m_forceFlipX[2] = {-1, -1}; // -1 = use WiVRn's value
++    int m_forceFlipY[2] = {-1, -1};
++    bool m_debug = false;
++    bool m_dot = false;
++    int32_t m_dotRadius = 24;
++    bool m_loggedNoGaze = false;
++    float m_gainY = 1.0f;             // multiplies vertical gaze offset from center
++    float m_winMin[2] = {1.0f, 1.0f}; // cx/cy range seen since last log line
++    float m_winMax[2] = {0.0f, 0.0f};
++    float m_winMinX[2] = {1.0f, 1.0f};
++    float m_winMaxX[2] = {0.0f, 0.0f};
++    uint32_t m_onlySamples = 0u; // 0 = any; else only passes with this color sample count
++    uint32_t m_onlyFormat = 0u;  // 0 = any; else only passes with this VkFormat value
++    float m_fixedY = 0.25f;      // y used by DXVK_GAZE_FAKE=fixed
++    int m_fake = 0;              // 0 = real gaze, 1 = sweep x, 2 = sweep y, 3 = circle
++    uint32_t m_forceW = 0u;
++    uint32_t m_forceH = 0u;
++    std::string m_path;
++
++    std::map<std::array<uint32_t, 5>, uint32_t> m_shapes; // (w, h, layers, fmt, samples) -> pass count
++    std::chrono::steady_clock::time_point m_nextSummary = {};
++    std::chrono::steady_clock::time_point m_nextGazeLog = {};
++
++    bool createResources();
++    void openSource();
++    bool readGaze(Gaze &g);
++  };
++
++}
+\ No newline at end of file
+diff --git a/src/dxvk/dxvk_graphics.cpp b/src/dxvk/dxvk_graphics.cpp
+index 9823bace..abaf2acd 100644
+--- a/src/dxvk/dxvk_graphics.cpp
++++ b/src/dxvk/dxvk_graphics.cpp
+@@ -3,6 +3,7 @@
+ #include "../util/util_time.h"
+ 
+ #include "dxvk_device.h"
++#include "dxvk_gaze_vrs.h"
+ #include "dxvk_graphics.h"
+ #include "dxvk_pipemanager.h"
+ 
+@@ -502,6 +503,9 @@ namespace dxvk {
+     if (state.cbUseDynamicBlendConstants)
+       dynamicStates.push_back(VK_DYNAMIC_STATE_BLEND_CONSTANTS);
+ 
++    if (dxvkGazeVrsEnabled(m_device))
++      dynamicStates.push_back(VK_DYNAMIC_STATE_FRAGMENT_SHADING_RATE_KHR);
++
+     VkPipelineDynamicStateCreateInfo dyInfo = { VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO };
+ 
+     if (!dynamicStates.empty()) {
+@@ -821,6 +825,9 @@ namespace dxvk {
+       }
+     }
+ 
++    if (dxvkGazeVrsEnabled(device))
++      dyStates[dyInfo.dynamicStateCount++] = VK_DYNAMIC_STATE_FRAGMENT_SHADING_RATE_KHR;
++
+     if (dyInfo.dynamicStateCount)
+       dyInfo.pDynamicStates = dyStates.data();
+   }
+diff --git a/src/dxvk/dxvk_graphics.h b/src/dxvk/dxvk_graphics.h
+index 98eea481..c00cb29a 100644
+--- a/src/dxvk/dxvk_graphics.h
++++ b/src/dxvk/dxvk_graphics.h
+@@ -223,7 +223,7 @@ namespace dxvk {
+             DxvkGraphicsPipelineFlags       flags);
+ 
+     VkPipelineDynamicStateCreateInfo  dyInfo    = { VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO };
+-    std::array<VkDynamicState, 20>    dyStates  = { };
++    std::array<VkDynamicState, 24>    dyStates  = { };
+ 
+     bool eq(const DxvkGraphicsPipelineDynamicState& other) const;
+ 
+diff --git a/src/dxvk/dxvk_shader.cpp b/src/dxvk/dxvk_shader.cpp
+index 8f6261ba..5d1ce0aa 100644
+--- a/src/dxvk/dxvk_shader.cpp
++++ b/src/dxvk/dxvk_shader.cpp
+@@ -1,4 +1,5 @@
+ #include "dxvk_device.h"
++#include "dxvk_gaze_vrs.h"
+ #include "dxvk_pipemanager.h"
+ #include "dxvk_shader.h"
+ #include "dxvk_shader_io.h"
+@@ -375,6 +376,9 @@ namespace dxvk {
+     if (m_device->features().extExtendedDynamicState3.extendedDynamicState3DepthClipEnable)
+       dynamicStates.push_back(VK_DYNAMIC_STATE_DEPTH_CLIP_ENABLE_EXT);
+ 
++    if (dxvkGazeVrsEnabled(m_device))
++      dynamicStates.push_back(VK_DYNAMIC_STATE_FRAGMENT_SHADING_RATE_KHR);
++
+     VkPipelineDynamicStateCreateInfo dyInfo = { VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO };
+     dyInfo.dynamicStateCount  = dynamicStates.size();
+     dyInfo.pDynamicStates     = dynamicStates.data();
+@@ -487,6 +491,9 @@ namespace dxvk {
+       dynamicStates.push_back(VK_DYNAMIC_STATE_SAMPLE_LOCATIONS_EXT);
+     }
+ 
++    if (dxvkGazeVrsEnabled(m_device))
++      dynamicStates.push_back(VK_DYNAMIC_STATE_FRAGMENT_SHADING_RATE_KHR);
++
+     VkPipelineDynamicStateCreateInfo dyInfo = { VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO };
+     dyInfo.dynamicStateCount  = dynamicStates.size();
+     dyInfo.pDynamicStates     = dynamicStates.data();
+diff --git a/src/dxvk/meson.build b/src/dxvk/meson.build
+index 6b12f95c..d17113e8 100644
+--- a/src/dxvk/meson.build
++++ b/src/dxvk/meson.build
+@@ -50,6 +50,7 @@ dxvk_src = [
+   'dxvk_gpu_event.cpp',
+   'dxvk_gpu_query.cpp',
+   'dxvk_graphics.cpp',
++  'dxvk_gaze_vrs.cpp',
+   'dxvk_hang.cpp',
+   'dxvk_image.cpp',
+   'dxvk_implicit_resolve.cpp',
+diff --git a/src/vulkan/vulkan_loader.h b/src/vulkan/vulkan_loader.h
+index c24698c5..2b3e0e65 100644
+--- a/src/vulkan/vulkan_loader.h
++++ b/src/vulkan/vulkan_loader.h
+@@ -458,6 +458,10 @@ namespace dxvk::vk {
+     VULKAN_FN(vkCmdSetSampleLocationsEXT);
+     #endif
+ 
++    #ifdef VK_KHR_fragment_shading_rate
++    VULKAN_FN(vkCmdSetFragmentShadingRateKHR);
++    #endif
++
+     #ifdef VK_EXT_shader_module_identifier
+     VULKAN_FN(vkGetShaderModuleCreateInfoIdentifierEXT);
+     VULKAN_FN(vkGetShaderModuleIdentifierEXT);
