@@ -1,6 +1,6 @@
 # WiVRn + DXVK Gaze-Driven VRS
 
-Experimental gaze-driven variable rate shading for VRChat over WiVRn.
+Experimental gaze-driven variable rate shading for VRChat over WiVRn(also works for any DXVK application).
 Tested on Arch with a Pico 4 Pro.
 
 WiVRn exports the per-eye fovea center to `/dev/shm/wivrn_gaze`. Patched
