@@ -35,7 +35,7 @@ index b973da65..70c1e5af 100644
 +gaze_shm_data * open_gaze_shm()
 +{
 +	static gaze_shm_data * ptr = []() -> gaze_shm_data * {
-+		int fd = open("/dev/shm/wivrn_gaze", O_RDWR | O_CREAT | O_CLOEXEC, 0666);
++		int fd = open("/dev/shm/wivrn_gaze", O_RDWR | O_CREAT | O_CLOEXEC, 0600);
 +		if (fd < 0)
 +			return nullptr;
 +		if (ftruncate(fd, 64) < 0)
