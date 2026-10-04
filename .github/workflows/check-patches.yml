@@ -1,0 +1,17 @@
+name: Patch sanity checks
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate patch structure
+        run: |
+          git apply --numstat patches/dxvk-gaze-vrs.patch
+          git apply --numstat patches/wivrn-gaze-export.patch
+          test -s patches/dxvk-gaze-vrs.patch
+          test -s patches/wivrn-gaze-export.patch

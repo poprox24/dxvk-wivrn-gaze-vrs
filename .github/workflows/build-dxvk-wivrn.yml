@@ -1,0 +1,213 @@
+name: Build DXVK gaze-VRS + WiVRn
+
+on:
+  workflow_dispatch:
+    inputs:
+      dxvk_ref:
+        description: 'DXVK base commit/tag (patch target)'
+        required: true
+        default: 'd30be2ba'
+        type: string
+      dxvk_repo:
+        description: 'DXVK repository URL'
+        required: false
+        default: 'https://github.com/doitsujin/dxvk.git'
+        type: string
+      wivrn_ref:
+        description: 'WiVRn tag/commit (README pins this to v26.9)'
+        required: true
+        default: 'v26.9'
+        type: string
+      wivrn_repo:
+        description: 'WiVRn repository URL'
+        required: false
+        default: 'https://github.com/WiVRn/WiVRn.git'
+        type: string
+      release_tag:
+        description: 'Optional: create a GitHub Release with this tag (e.g. v1.0-gaze-vrs)'
+        required: false
+        default: ''
+        type: string
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  dxvk:
+    name: Build DXVK (Windows DLLs)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install DXVK build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            meson ninja-build glslang-tools \
+            gcc-mingw-w64-x86-64 g++-mingw-w64-x86-64
+
+      - name: Clone DXVK
+        run: |
+          git clone --recursive "${{ inputs.dxvk_repo || 'https://github.com/doitsujin/dxvk.git' }}" dxvk
+          git -C dxvk checkout --recurse-submodules "${{ inputs.dxvk_ref || 'd30be2ba' }}"
+
+      - name: Apply DXVK patch
+        run: |
+          git -C dxvk apply --check "$GITHUB_WORKSPACE/patches/dxvk-gaze-vrs.patch"
+          git -C dxvk apply        "$GITHUB_WORKSPACE/patches/dxvk-gaze-vrs.patch"
+
+      - name: Configure
+        run: |
+          meson setup dxvk/build dxvk \
+            --cross-file dxvk/build-win64.txt \
+            -Dbuildtype=release \
+            -Denable_d3d8=false \
+            -Denable_d3d9=false \
+            -Denable_d3d10=false
+
+      - name: Build
+        run: ninja -C dxvk/build
+
+      - name: Collect DLLs
+        run: |
+          mkdir -p dist-dxvk
+          cp dxvk/build/src/d3d11/d3d11.dll dist-dxvk/
+          cp dxvk/build/src/dxgi/dxgi.dll   dist-dxvk/
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dxvk-gaze-vrs
+          path: dist-dxvk/
+
+  wivrn:
+    name: Build WiVRn (server)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install WiVRn build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential cmake ninja-build pkg-config git zip python3 \
+            libglib2.0-dev libglib2.0-dev-bin \
+            libudev-dev \
+            libusb-1.0-0-dev libhidapi-dev libbluetooth-dev \
+            libavahi-client-dev libavahi-glib-dev \
+            libavcodec-dev libavformat-dev libavutil-dev libswscale-dev \
+            libboost-dev libboost-locale-dev libboost-url-dev libboost-iostreams-dev \
+            libglm-dev glslang-dev glslang-tools \
+            libspdlog-dev \
+            libx264-dev libdrm-dev \
+            libvulkan-dev \
+            libegl1-mesa-dev libgles2-mesa-dev libgl1-mesa-dev \
+            libeigen3-dev nlohmann-json3-dev libcli11-dev \
+            libnotify-dev \
+            libpng-dev libarchive-dev librsvg2-dev \
+            libpipewire-0.3-dev libsystemd-dev
+
+      - name: Provide Vulkan-Headers >= 1.4.304
+        run: |
+          git clone --depth 1 --branch v1.4.304 \
+            https://github.com/KhronosGroup/Vulkan-Headers.git "$RUNNER_TEMP/vkh"
+
+      - name: Clone WiVRn
+        run: |
+          git clone --recursive "${{ inputs.wivrn_repo || 'https://github.com/WiVRn/WiVRn.git' }}" wivrn
+          git -C wivrn checkout --recurse-submodules "${{ inputs.wivrn_ref || 'v26.9' }}"
+
+      - name: Verify pinned WiVRn revision
+        run: |
+          ref="${{ inputs.wivrn_ref || 'v26.9' }}"
+          if [ "$ref" = "v26.9" ]; then
+            actual="$(git -C wivrn rev-parse HEAD)"
+            expected="bbc6e4cc36c355fa6180980abd231673dc15115d"
+            if [ "$actual" != "$expected" ]; then
+              echo "v26.9 resolved to $actual, expected $expected" >&2
+              exit 1
+            fi
+          fi
+
+      - name: Apply WiVRn patch
+        run: |
+          git -C wivrn apply --check "$GITHUB_WORKSPACE/patches/wivrn-gaze-export.patch"
+          git -C wivrn apply        "$GITHUB_WORKSPACE/patches/wivrn-gaze-export.patch"
+
+      - name: Configure
+        run: |
+          cmake -S wivrn -B wivrn/build -GNinja \
+            -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+            -DCMAKE_INSTALL_PREFIX=/usr \
+            -DWIVRN_BUILD_CLIENT=OFF \
+            -DWIVRN_BUILD_SERVER=ON \
+            -DWIVRN_BUILD_DASHBOARD=OFF \
+            -DVulkan_INCLUDE_DIR="$RUNNER_TEMP/vkh/include"
+
+      - name: Build
+        run: cmake --build wivrn/build
+
+      - name: Install to staging directory
+        run: |
+          DESTDIR="$PWD/dist-wivrn" cmake --install wivrn/build
+          find dist-wivrn -type f | sort
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wivrn-server
+          path: dist-wivrn/
+
+  release:
+    name: Publish release
+    needs: [dxvk, wivrn]
+    if: |
+      always()
+      && needs.dxvk.result == 'success'
+      && (github.event_name == 'push' || inputs.release_tag != '')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Install zip
+        run: sudo apt-get update && sudo apt-get install -y zip
+
+      - name: Download DXVK artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: dxvk-gaze-vrs
+          path: release/dxvk-gaze-vrs
+
+      - name: Download WiVRn artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: wivrn-server
+          path: release/wivrn-server
+        continue-on-error: true
+
+      - name: Package
+        run: |
+          cd release
+          zip -r dxvk-gaze-vrs.zip dxvk-gaze-vrs
+          if [ -d wivrn-server ]; then
+            zip -r wivrn-server.zip wivrn-server
+          else
+            echo "wivrn-server artifact not present; releasing DXVK only"
+          fi
+          ls -la
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ inputs.release_tag || github.ref_name }}
+          name: ${{ inputs.release_tag || github.ref_name }}
+          generate_release_notes: true
+          body: |
+            Experimental gaze-driven VRS build.
+
+            - DXVK base: `${{ inputs.dxvk_ref || 'd30be2ba' }}`
+            - WiVRn base: `${{ inputs.wivrn_ref || 'v26.9' }}`
+
+            See README for install and VRChat launch configuration.
+          files: |
+            release/dxvk-gaze-vrs.zip
+            release/wivrn-server.zip
+          fail_on_unmatched_files: false

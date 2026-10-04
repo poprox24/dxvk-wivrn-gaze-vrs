@@ -1,0 +1,8 @@
+This repository contains integration scripts, configuration, documentation, and patches for third-party projects.
+
+The DXVK-derived changes are under the terms of the DXVK project license (GPL-2.0-or-later as applicable to the upstream release).
+The WiVRn-derived changes are under the terms of the WiVRn project license applicable to the upstream release.
+
+This repository does not relicense the upstream projects. See:
+- https://github.com/doitsujin/dxvk/blob/master/LICENSE
+- https://github.com/WiVRn/WiVRn

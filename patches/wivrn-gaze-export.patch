@@ -1,0 +1,107 @@
+diff --git a/server/compositor/foveation.cpp b/server/compositor/foveation.cpp
+index b973da65..70c1e5af 100644
+--- a/server/compositor/foveation.cpp
++++ b/server/compositor/foveation.cpp
+@@ -28,7 +28,12 @@
+ #include "xrt/xrt_limits.h"
+ 
+ #include <array>
++#include <atomic>
+ #include <cmath>
++#include <cstring>
++#include <fcntl.h>
++#include <sys/mman.h>
++#include <unistd.h>
+ #include <ranges>
+ #include <vulkan/vulkan_raii.hpp>
+ #include <vulkan/vulkan_structs.hpp>
+@@ -355,6 +360,59 @@ static void fill_param_2d(
+ namespace wivrn
+ {
+ 
++// ADDED: gaze export for the DXVK gaze-VRS experiment.
++// Layout must match DxvkGazeVrs::GazeShm in dxvk_gaze_vrs.h.
++namespace
++{
++struct gaze_shm_data
++{
++	uint32_t magic;
++	uint32_t seq;
++	float cx[2];
++	float cy[2];
++	uint32_t valid;
++};
++
++gaze_shm_data * open_gaze_shm()
++{
++	static gaze_shm_data * ptr = []() -> gaze_shm_data * {
++		int fd = open("/dev/shm/wivrn_gaze", O_RDWR | O_CREAT | O_CLOEXEC, 0666);
++		if (fd < 0)
++			return nullptr;
++		if (ftruncate(fd, 64) < 0)
++		{
++			close(fd);
++			return nullptr;
++		}
++		void * m = mmap(nullptr, 64, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
++		close(fd);
++		if (m == MAP_FAILED)
++			return nullptr;
++		return static_cast<gaze_shm_data *>(m);
++	}();
++	return ptr;
++}
++
++void export_gaze(const float cx[2], const float cy[2], bool valid)
++{
++	auto * s = open_gaze_shm();
++	if (not s)
++		return;
++
++	auto * seq = reinterpret_cast<std::atomic<uint32_t> *>(&s->seq);
++	uint32_t v = seq->load(std::memory_order_relaxed);
++	seq->store(v + 1, std::memory_order_release); // odd = writing
++	s->magic = 0x455a4147u;
++	for (int i = 0; i < 2; ++i)
++	{
++		s->cx[i] = cx[i];
++		s->cy[i] = cy[i];
++	}
++	s->valid = valid;
++	seq->store(v + 2, std::memory_order_release);
++}
++} // namespace
++
+ void foveation::compute_params()
+ {
+ 	auto e = yaw_pitch(gaze);
+@@ -392,6 +450,29 @@ void foveation::compute_params()
+ 		else
+ 			params[i].y = {uint16_t(extent_h)};
+ 	}
++
++	// ADDED: export per-eye fovea centers as fractions of the eye image (0..1, y from top)
++	{
++		float cx[2], cy[2];
++		bool ok = true;
++		for (size_t i = 0; i < 2; ++i)
++		{
++			const auto & fov = last.fovs[i];
++			auto distance = manual_foveation.enabled ? manual_foveation.distance : convergence_distance;
++			auto angle_x = convergence_angle(distance, eye_x[i], -e.x);
++			float x = angles_to_center(angle_x, fov.angle_left, fov.angle_right);
++
++			auto angle_y = -e.y;
++			if (is_zero_quat(gaze) and not manual_foveation.enabled)
++				angle_y += angle_offset;
++			float y = angles_to_center(-angle_y, fov.angle_up, fov.angle_down);
++
++			cx[i] = (x + 1.f) * 0.5f;
++			cy[i] = (y + 1.f) * 0.5f;
++			ok = ok and std::isfinite(cx[i]) and std::isfinite(cy[i]);
++		}
++		export_gaze(cx, cy, ok and not is_zero_quat(gaze));
++	}
+ }
+ 
+ foveation::foveation(wivrn::vk_bundle & bundle, vk::Extent3D foveated_size) :
