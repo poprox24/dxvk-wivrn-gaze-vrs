@@ -75,8 +75,9 @@ normalized by the shorter eye dimension. So for a square eye:
 | `R1` | full-res area |
 |---|---|
 | 0.25 | ~20% |
-| 0.39 | ~50% |
-| 0.48 | ~75% |
+| 0.40 | ~50% |
+| 0.49 | ~75% |
+| 0.50 | ~78% |
 | 0.56 | ~100% |
 
 `R1` is where shading starts to drop; `R2` is where it hits `COARSE`.
