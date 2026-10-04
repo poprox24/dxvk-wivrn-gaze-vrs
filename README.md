@@ -36,7 +36,7 @@ matching `v26.9` client from WiVRn's releases.
 
 ## Run VRChat
 
-    DXVK_GAZE_VRS=1 DXVK_GAZE_FMT=97 DXVK_GAZE_FLIP_Y=1 DXVK_GAZE_R1=0.4 DXVK_GAZE_R2=0.48 DXVK_GAZE_COARSE=6
+    DXVK_GAZE_VRS=1 DXVK_GAZE_FMT=97 DXVK_GAZE_FLIP_Y=1 DXVK_GAZE_R1=0.4 DXVK_GAZE_R2=0.48 DXVK_GAZE_COARSE=5
 
 Add `DXVK_GAZE_DEBUG=1 DXVK_GAZE_DOT=1` to draw the gaze dots. See
 [`config/vrchat.env`](config/vrchat.env).
