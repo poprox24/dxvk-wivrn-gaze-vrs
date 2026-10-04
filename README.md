@@ -74,7 +74,6 @@ normalized by the shorter eye dimension. So for a square eye:
 
 | `R1` | full-res area |
 |---|---|
-| 0.06 | ~0.3% (tested value) |
 | 0.25 | ~20% |
 | 0.50 | ~78% |
 
