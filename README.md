@@ -36,7 +36,7 @@ matching `v26.9` client from WiVRn's releases.
 
 ## Run VRChat
 
-    DXVK_GAZE_VRS=1 DXVK_GAZE_FMT=97 DXVK_GAZE_FLIP_Y=1 DXVK_GAZE_R1=0.4 DXVK_GAZE_R2=0.5 DXVK_GAZE_COARSE=6
+    DXVK_GAZE_VRS=1 DXVK_GAZE_FMT=97 DXVK_GAZE_FLIP_Y=1 DXVK_GAZE_R1=0.4 DXVK_GAZE_R2=0.48 DXVK_GAZE_COARSE=6
 
 Add `DXVK_GAZE_DEBUG=1 DXVK_GAZE_DOT=1` to draw the gaze dots. See
 [`config/vrchat.env`](config/vrchat.env).
@@ -75,13 +75,26 @@ normalized by the shorter eye dimension. So for a square eye:
 | `R1` | full-res area |
 |---|---|
 | 0.25 | ~20% |
-| 0.50 | ~78% |
+| 0.39 | ~50% |
+| 0.48 | ~75% |
+| 0.56 | ~100% |
 
 `R1` is where shading starts to drop; `R2` is where it hits `COARSE`.
 Below `R1` is 1×1, between `R1` and `R2` is 2×2, beyond `R2` is whatever
 `DXVK_GAZE_COARSE` says. Keep `R2 > R1`, or the transition band
 disappears. They're read at device creation, so a VRChat restart is
 needed to change them.
+
+To pick `R` for a target area percentage:
+
+```
+R = sqrt(area / pi)
+```
+
+So 50% → `sqrt(0.50 / 3.14159)` → `0.40`. 75% → `0.49`. 90% → `0.54`.
+This works up to ~78% (the inscribed circle); past that, the corners of
+the eye fall outside the circle and stay coarse no matter how large `R`
+gets.
 
 ## Build
 
