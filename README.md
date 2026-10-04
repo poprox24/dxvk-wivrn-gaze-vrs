@@ -117,3 +117,6 @@ CI's WiVRn job builds the **server only** (no dashboard) and runs
 - Revisions: DXVK `d30be2ba`, WiVRn `v26.9` / `bbc6e4c` (see
   `versions.env`). The DXVK patch records its parent blob hashes, so the
   DXVK ref must match exactly.
+
+## Demo with overexadurated values and gaze dot enabled
+[Google drive link](https://drive.google.com/file/d/1OabrqSbzjEp96AFs6StbJrUAcHWSyMiQ/view?usp=sharing)
