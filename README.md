@@ -57,6 +57,8 @@ Verify the shared-memory file exists while a session is up:
 | `DXVK_GAZE_VRS=1` | Enable gaze VRS |
 | `DXVK_GAZE_FMT=97` | Restrict to the RGBA16F scene pass |
 | `DXVK_GAZE_FLIP_Y=1` | Flip scene-pass Y |
+| `DXVK_GAZE_FULL_AREA=40` | Percent of the eye image that renders at full rate |
+| `DXVK_GAZE_MID_AREA=65` | Percent rendered at full or 2×2; beyond it uses `COARSE` |
 | `DXVK_GAZE_R1` / `R2` | Inner / outer radius of the sharp region |
 | `DXVK_GAZE_COARSE` | Outer shading-rate code (`6` = 2x4) |
 | `DXVK_GAZE_DEBUG=1` | Pass/gaze diagnostics |
@@ -72,35 +74,15 @@ For a debug run with `PROTON_LOG=1`:
 
     grep -a "passes in last" -A8 ~/steam-438100.log | tail -24
 
-### What R1 and R2 mean
+### Choosing the sharp area
 
-`DXVK_GAZE_R1` and `R2` are radii, not screen fractions, and `d` is
-normalized by the shorter eye dimension. So for a square eye:
+`DXVK_GAZE_FULL_AREA` and `DXVK_GAZE_MID_AREA` are percentages of one eye's
+image. Keep `MID_AREA` above `FULL_AREA`. `100` means the whole eye. The
+circle is clipped by the image edge, so looking near an edge shows less
+than the percentage, and above ~78% the circle no longer reaches the corners.
 
-| `R1` | full-res area |
-|---|---|
-| 0.25 | ~20% |
-| 0.40 | ~50% |
-| 0.49 | ~75% |
-| 0.50 | ~78% |
-| 0.56 | ~100% |
-
-`R1` is where shading starts to drop; `R2` is where it hits `COARSE`.
-Below `R1` is 1×1, between `R1` and `R2` is 2×2, beyond `R2` is whatever
-`DXVK_GAZE_COARSE` says. Keep `R2 > R1`, or the transition band
-disappears. They're read at device creation, so a VRChat restart is
-needed to change them.
-
-To pick `R` for a target area percentage:
-
-```
-R = sqrt(area / pi)
-```
-
-So 50% → `sqrt(0.50 / 3.14159)` → `0.40`. 75% → `0.49`. 90% → `0.54`.
-This works up to ~78% (the inscribed circle); past that, the corners of
-the eye fall outside the circle and stay coarse no matter how large `R`
-gets.
+`DXVK_GAZE_R1` / `R2` still work (radius in units of the shorter eye
+dimension) and are used only when the area variables are not set.
 
 ## Build
 

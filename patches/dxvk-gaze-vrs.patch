@@ -212,7 +212,7 @@ index 76642cda..7f0e3bfd 100644
  
 diff --git a/src/dxvk/dxvk_gaze_dot.h b/src/dxvk/dxvk_gaze_dot.h
 new file mode 100644
-index 00000000..4a85f2b7
+index 00000000..71ccea17
 --- /dev/null
 +++ b/src/dxvk/dxvk_gaze_dot.h
 @@ -0,0 +1,31 @@
@@ -250,10 +250,10 @@ index 00000000..4a85f2b7
 \ No newline at end of file
 diff --git a/src/dxvk/dxvk_gaze_vrs.cpp b/src/dxvk/dxvk_gaze_vrs.cpp
 new file mode 100644
-index 00000000..4f9ffd84
+index 00000000..d453c3be
 --- /dev/null
 +++ b/src/dxvk/dxvk_gaze_vrs.cpp
-@@ -0,0 +1,672 @@
+@@ -0,0 +1,690 @@
 +#include <algorithm>
 +#include <atomic>
 +#include <cmath>
@@ -306,6 +306,8 @@ index 00000000..4f9ffd84
 +  {
 +    m_r1 = getEnvFloat("DXVK_GAZE_R1", m_r1);
 +    m_r2 = getEnvFloat("DXVK_GAZE_R2", m_r2);
++    m_fullArea = getEnvFloat("DXVK_GAZE_FULL_AREA", m_fullArea);
++    m_midArea = getEnvFloat("DXVK_GAZE_MID_AREA", m_midArea);
 +    m_minSize = uint32_t(getEnvFloat("DXVK_GAZE_MINSIZE", float(m_minSize)));
 +    m_flipY = env::getEnvVar("DXVK_GAZE_FLIP_Y") == "1";
 +    m_swapEyes = env::getEnvVar("DXVK_GAZE_SWAP_EYES") == "1";
@@ -350,7 +352,8 @@ index 00000000..4f9ffd84
 +
 +    Logger::info(str::format("GazeVRS: init ", m_ok ? "ok" : "FAILED",
 +                             ", texel ", m_texel.width, "x", m_texel.height,
-+                             ", r1=", m_r1, " r2=", m_r2, " coarse=", m_coarse,
++                             ", r1=", m_r1, " r2=", m_r2, ", full_area=", m_fullArea,
++                             ", mid_area=", m_midArea, ", coarse=", m_coarse,
 +                             ", file=", m_path));
 +  }
 +
@@ -795,6 +798,21 @@ index 00000000..4f9ffd84
 +
 +      const uint32_t mid = std::min<uint32_t>(5u, m_coarse);
 +
++      // Radii are in units of min(eye width, eye height). If an area percentage is set, convert it: area = pi * R^2 * min^2  ->  R = sqrt(area * W * H / pi) / min
++      const float eyeH = float(extent.height);
++      const float minDim = std::min(eyeW, eyeH);
++
++      auto areaToRadius = [&](float percent)
++      {
++        float a = std::clamp(percent, 0.0f, 100.0f) * 0.01f;
++        if (a >= 1.0f)
++          return 10.0f; // 100% = whole eye, corners included
++        return std::sqrt(a * eyeW * eyeH / 3.14159265f) / minDim;
++      };
++
++      const float r1 = m_fullArea >= 0.0f ? areaToRadius(m_fullArea) : m_r1;
++      const float r2 = m_midArea >= 0.0f ? areaToRadius(m_midArea) : m_r2;
++
 +      for (uint32_t l = 0; l < usedLayers; l++)
 +      {
 +        for (uint32_t ty = 0; ty < tilesY; ty++)
@@ -819,8 +837,8 @@ index 00000000..4f9ffd84
 +
 +            uint8_t rate = 0u;
 +
-+            if (d >= m_r1)
-+              rate = uint8_t(d >= m_r2 ? m_coarse : mid);
++            if (d >= r1)
++              rate = uint8_t(d >= r2 ? m_coarse : mid);
 +
 +            data[size_t(l) * layerStride + size_t(ty) * tilesX + tx] = rate;
 +          }
@@ -929,10 +947,10 @@ index 00000000..4f9ffd84
 \ No newline at end of file
 diff --git a/src/dxvk/dxvk_gaze_vrs.h b/src/dxvk/dxvk_gaze_vrs.h
 new file mode 100644
-index 00000000..2e593896
+index 00000000..42325b08
 --- /dev/null
 +++ b/src/dxvk/dxvk_gaze_vrs.h
-@@ -0,0 +1,116 @@
+@@ -0,0 +1,118 @@
 +#pragma once
 +
 +#include <array>
@@ -1016,6 +1034,8 @@ index 00000000..2e593896
 +    // Configuration
 +    float m_r1 = 0.20f;
 +    float m_r2 = 0.40f;
++    float m_fullArea = -1.0f;
++    float m_midArea = -1.0f;
 +    uint32_t m_coarse = 5u; // raw rate code of the outer zone, 5 = 2x2, 10 = 4x4
 +    uint32_t m_minSize = 700u;
 +    bool m_flipY = false; // extra global Y flip
@@ -1152,3 +1172,6 @@ index c24698c5..2b3e0e65 100644
      #ifdef VK_EXT_shader_module_identifier
      VULKAN_FN(vkGetShaderModuleCreateInfoIdentifierEXT);
      VULKAN_FN(vkGetShaderModuleIdentifierEXT);
+diff --git a/subprojects/.wraplock b/subprojects/.wraplock
+new file mode 100644
+index 00000000..e69de29b
