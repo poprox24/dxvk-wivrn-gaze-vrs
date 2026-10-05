@@ -77,9 +77,9 @@ For a debug run with `PROTON_LOG=1`:
 ### Choosing the sharp area
 
 `DXVK_GAZE_FULL_AREA` and `DXVK_GAZE_MID_AREA` are percentages of one eye's
-image. Keep `MID_AREA` above `FULL_AREA`. `100` means the whole eye. The
-circle is clipped by the image edge, so looking near an edge shows less
-than the percentage, and above ~78% the circle no longer reaches the corners.
+image. Keep `MID_AREA` above `FULL_AREA`. `100` means the whole eye. The circle's area also counts any part that hangs outside the image, so above
+~78% the full-resolution part inside the image is smaller than the percentage
+(the corners stay coarse). `100` means the whole eye.
 
 `DXVK_GAZE_R1` / `R2` still work (radius in units of the shorter eye
 dimension) and are used only when the area variables are not set.
