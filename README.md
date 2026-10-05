@@ -41,7 +41,7 @@ matching `v26.9` client from WiVRn's releases.
 
 ## Run VRChat
 
-    DXVK_GAZE_VRS=1 DXVK_GAZE_FMT=97 DXVK_GAZE_FLIP_Y=1 DXVK_GAZE_R1=0.4 DXVK_GAZE_R2=0.48 DXVK_GAZE_COARSE=5
+    DXVK_GAZE_VRS=1 DXVK_GAZE_FMT=97 DXVK_GAZE_FLIP_Y=1 DXVK_GAZE_FULL_AREA=55 DXVK_GAZE_MID_AREA=65 DXVK_GAZE_COARSE=auto
 
 Add `DXVK_GAZE_DEBUG=1 DXVK_GAZE_DOT=1` to draw the gaze dots. See
 [`config/vrchat.env`](config/vrchat.env).
@@ -57,10 +57,10 @@ Verify the shared-memory file exists while a session is up:
 | `DXVK_GAZE_VRS=1` | Enable gaze VRS |
 | `DXVK_GAZE_FMT=97` | Restrict to the RGBA16F scene pass |
 | `DXVK_GAZE_FLIP_Y=1` | Flip scene-pass Y |
-| `DXVK_GAZE_FULL_AREA=40` | Percent of the eye image that renders at full rate |
-| `DXVK_GAZE_MID_AREA=65` | Percent rendered at full or 2×2; beyond it uses `COARSE` |
+| `DXVK_GAZE_FULL_AREA` | Percent of the eye image that renders at full rate |
+| `DXVK_GAZE_MID_AREA` | Percent rendered at full or 2×2; beyond it uses `COARSE` |
 | `DXVK_GAZE_R1` / `R2` | Inner / outer radius of the sharp region |
-| `DXVK_GAZE_COARSE` | Outer shading-rate code (`auto` = Highest available for your system) |
+| `DXVK_GAZE_COARSE` | Outer shading-rate code (`auto` = Highest available for your system), you may also enter an int |
 | `DXVK_GAZE_DEBUG=1` | Pass/gaze diagnostics |
 | `DXVK_GAZE_DOT=1` | Draw diagnostic gaze dots |
 | `DXVK_GAZE_SWAP_EYES=1` | Swap per-eye gaze data |
