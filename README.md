@@ -121,28 +121,21 @@ pinned commit; `versions.env` holds the pin.
 The local WiVRn script builds the server, dashboard, and `wivrnctl`, but
 not the Android/headset client.
 
-### CI
-
-`.github/workflows/build-dxvk.yml` builds both from pinned refs and
-uploads artifacts. Trigger from **Actions → Run workflow**. Set
-`release_tag` to publish a GitHub Release.
-
-CI's WiVRn job builds the **server only** (no dashboard) and runs
-`cmake --install` into a staging tree - that's why the install step is
-`cp -a usr/. /usr/` rather than copying binaries.
-
 ## Architecture
 
     Eye tracking
           |
           v
-        WiVRn  --- /dev/shm/wivrn_gaze ---> DXVK (via Wine path)
-                                                 |
-                                                 v
-                                  VK_KHR_fragment_shading_rate
-                                                 |
-                                                 v
-                                          VRChat scene pass
+    WiVRn /dev/shm/wivrn_gaze
+          |
+          v
+    DXVK (via Wine path)
+          |
+          v
+    VK_KHR_fragment_shading_rate
+          |
+          v
+     VRChat scene pass
 
 ## Notes
 
