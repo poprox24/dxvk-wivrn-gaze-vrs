@@ -116,16 +116,17 @@ fi
   exit 1
 }
 
-mapfile -t candidates < <(find "$proton_dir" -type d -path '*/dxvk*' 2>/dev/null | sort -u)
-target=""
-for d in "${candidates[@]}"; do
-  if [[ -f "$d/d3d11.dll" && -f "$d/dxgi.dll" ]]; then target="$d"; break; fi
-done
-if [[ -z "$target" ]]; then
-  echo "Could not find the Proton DXVK directory containing d3d11.dll and dxgi.dll." >&2
-  find "$proton_dir" -type f \( -name d3d11.dll -o -name dxgi.dll \) -print >&2 || true
+target="$proton_dir/files/lib/wine/dxvk/x86_64-windows"
+
+[[ -d "$target" ]] || {
+  echo "Could not find the Proton DXVK directory: $target" >&2
   exit 1
-fi
+}
+
+[[ -f "$target/d3d11.dll" && -f "$target/dxgi.dll" ]] || {
+  echo "Missing d3d11.dll and/or dxgi.dll in $target." >&2
+  exit 1
+}
 
 mkdir -p "$backup_dir"
 cp -a "$target/d3d11.dll" "$backup_dir/d3d11.dll"

@@ -250,10 +250,10 @@ index 00000000..71ccea17
 \ No newline at end of file
 diff --git a/src/dxvk/dxvk_gaze_vrs.cpp b/src/dxvk/dxvk_gaze_vrs.cpp
 new file mode 100644
-index 00000000..d453c3be
+index 00000000..81bf5eaa
 --- /dev/null
 +++ b/src/dxvk/dxvk_gaze_vrs.cpp
-@@ -0,0 +1,690 @@
+@@ -0,0 +1,787 @@
 +#include <algorithm>
 +#include <atomic>
 +#include <cmath>
@@ -294,6 +294,26 @@ index 00000000..d453c3be
 +    return v == "1" ? 1 : 0;
 +  }
 +
++  static uint32_t getFragmentRateCode(VkExtent2D size)
++  {
++    uint32_t w = 0u;
++    uint32_t h = 0u;
++
++    while (size.width > 1u)
++    {
++      size.width >>= 1;
++      w++;
++    }
++
++    while (size.height > 1u)
++    {
++      size.height >>= 1;
++      h++;
++    }
++
++    return (w << 2) | h;
++  }
++
 +  bool dxvkGazeVrsEnabled(const DxvkDevice *device)
 +  {
 +    static const bool requested = env::getEnvVar("DXVK_GAZE_VRS") == "1";
@@ -332,9 +352,21 @@ index 00000000..d453c3be
 +    }
 +
 +    // Raw shading rate code for the outer zone: (log2(w) << 2) | log2(h)
-+    // 5 = 2x2, 6 = 2x4, 9 = 4x2, 10 = 4x4. DXVK_GAZE_MAXRATE kept as alias.
-+    float coarse = getEnvFloat("DXVK_GAZE_COARSE", getEnvFloat("DXVK_GAZE_MAXRATE", float(m_coarse)));
-+    m_coarse = uint32_t(coarse);
++    // 5 = 2x2, 6 = 2x4, 9 = 4x2, 10 = 4x4.
++    // "auto" uses the largest rate supported by the current pass.
++    std::string coarse = env::getEnvVar("DXVK_GAZE_COARSE");
++
++    if (coarse.empty())
++      coarse = env::getEnvVar("DXVK_GAZE_MAXRATE");
++
++    if (coarse == "auto")
++    {
++      m_autoCoarse = true;
++    }
++    else if (!coarse.empty())
++    {
++      m_coarse = uint32_t(std::atof(coarse.c_str()));
++    }
 +
 +    m_forceFlipX[0] = getEnvTri("DXVK_GAZE_FLIPX_L");
 +    m_forceFlipX[1] = getEnvTri("DXVK_GAZE_FLIPX_R");
@@ -353,7 +385,7 @@ index 00000000..d453c3be
 +    Logger::info(str::format("GazeVRS: init ", m_ok ? "ok" : "FAILED",
 +                             ", texel ", m_texel.width, "x", m_texel.height,
 +                             ", r1=", m_r1, " r2=", m_r2, ", full_area=", m_fullArea,
-+                             ", mid_area=", m_midArea, ", coarse=", m_coarse,
++                             ", mid_area=", m_midArea, ", coarse=", coarse,
 +                             ", file=", m_path));
 +  }
 +
@@ -621,6 +653,71 @@ index 00000000..d453c3be
 +    if (!candidate)
 +      return false;
 +
++    uint32_t coarse = m_coarse;
++
++    if (m_autoCoarse && m_autoCoarseSamples != samples)
++    {
++      m_autoCoarseSamples = samples;
++      m_autoCoarseRate = 0u;
++
++      auto vki = m_device->vki();
++      VkPhysicalDevice physicalDevice = m_device->adapter()->handle();
++
++      uint32_t count = 0u;
++      VkResult result = vki->vkGetPhysicalDeviceFragmentShadingRatesKHR(
++          physicalDevice,
++          &count, nullptr);
++
++      if (result == VK_SUCCESS && count > 0u)
++      {
++        std::vector<VkPhysicalDeviceFragmentShadingRateKHR> rates(count);
++
++        for (auto &rate : rates)
++          rate.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FRAGMENT_SHADING_RATE_KHR;
++
++        result = vki->vkGetPhysicalDeviceFragmentShadingRatesKHR(
++            physicalDevice, &count, rates.data());
++
++        Logger::info(str::format(
++            "GazeVRS: shading rate query result=", int32_t(result),
++            " count=", count));
++
++        if (result == VK_SUCCESS || result == VK_INCOMPLETE)
++        {
++          VkSampleCountFlags sampleMask = VkSampleCountFlags(samples);
++
++          for (const auto &rate : rates)
++          {
++            if (!(rate.sampleCounts & sampleMask))
++              continue;
++
++            m_autoCoarseRate = getFragmentRateCode(rate.fragmentSize);
++
++            Logger::info(str::format(
++                "GazeVRS: auto coarse=", rate.fragmentSize.width, "x", rate.fragmentSize.height,
++                " (code ", m_autoCoarseRate, "), samples=", uint32_t(samples)));
++
++            break;
++          }
++        }
++      }
++
++      if (result != VK_SUCCESS && result != VK_INCOMPLETE)
++      {
++        Logger::warn(str::format(
++            "GazeVRS: failed to query fragment shading rates, result=",
++            int32_t(result)));
++      }
++      else if (count == 0u)
++      {
++        Logger::warn(
++            "GazeVRS: no fragment shading rates reported");
++      }
++    }
++
++    if (m_autoCoarse)
++      coarse = m_autoCoarseRate;
++
 +    const uint32_t tilesX = (extent.width + m_texel.width - 1u) / m_texel.width;
 +    const uint32_t tilesY = (extent.height + m_texel.height - 1u) / m_texel.height;
 +
@@ -796,7 +893,7 @@ index 00000000..d453c3be
 +      const uint32_t layerStride = (tileCount + 3u) & ~3u;
 +      std::vector<uint8_t> data(size_t(layerStride) * usedLayers, 0u);
 +
-+      const uint32_t mid = std::min<uint32_t>(5u, m_coarse);
++      const uint32_t mid = std::min<uint32_t>(5u, coarse);
 +
 +      // Radii are in units of min(eye width, eye height). If an area percentage is set, convert it: area = pi * R^2 * min^2  ->  R = sqrt(area * W * H / pi) / min
 +      const float eyeH = float(extent.height);
@@ -838,7 +935,7 @@ index 00000000..d453c3be
 +            uint8_t rate = 0u;
 +
 +            if (d >= r1)
-+              rate = uint8_t(d >= r2 ? m_coarse : mid);
++              rate = uint8_t(d >= r2 ? coarse : mid);
 +
 +            data[size_t(l) * layerStride + size_t(ty) * tilesX + tx] = rate;
 +          }
@@ -947,10 +1044,10 @@ index 00000000..d453c3be
 \ No newline at end of file
 diff --git a/src/dxvk/dxvk_gaze_vrs.h b/src/dxvk/dxvk_gaze_vrs.h
 new file mode 100644
-index 00000000..42325b08
+index 00000000..adaaed29
 --- /dev/null
 +++ b/src/dxvk/dxvk_gaze_vrs.h
-@@ -0,0 +1,118 @@
+@@ -0,0 +1,122 @@
 +#pragma once
 +
 +#include <array>
@@ -1037,6 +1134,10 @@ index 00000000..42325b08
 +    float m_fullArea = -1.0f;
 +    float m_midArea = -1.0f;
 +    uint32_t m_coarse = 5u; // raw rate code of the outer zone, 5 = 2x2, 10 = 4x4
++    bool m_autoCoarse = false;
++    uint32_t m_autoCoarseRate = 0u;
++    VkSampleCountFlagBits m_autoCoarseSamples = VkSampleCountFlagBits(0);
++    uint32_t m_lastCoarse = ~0u;
 +    uint32_t m_minSize = 700u;
 +    bool m_flipY = false; // extra global Y flip
 +    bool m_swapEyes = false;
@@ -1158,10 +1259,21 @@ index 6b12f95c..d17113e8 100644
    'dxvk_image.cpp',
    'dxvk_implicit_resolve.cpp',
 diff --git a/src/vulkan/vulkan_loader.h b/src/vulkan/vulkan_loader.h
-index c24698c5..2b3e0e65 100644
+index c24698c5..1793d87a 100644
 --- a/src/vulkan/vulkan_loader.h
 +++ b/src/vulkan/vulkan_loader.h
-@@ -458,6 +458,10 @@ namespace dxvk::vk {
+@@ -179,6 +179,10 @@ namespace dxvk::vk {
+     #ifdef VK_EXT_sample_locations
+     VULKAN_FN(vkGetPhysicalDeviceMultisamplePropertiesEXT);
+     #endif
++
++    #ifdef VK_KHR_fragment_shading_rate
++    VULKAN_FN(vkGetPhysicalDeviceFragmentShadingRatesKHR);
++    #endif
+   };
+   
+   
+@@ -458,6 +462,10 @@ namespace dxvk::vk {
      VULKAN_FN(vkCmdSetSampleLocationsEXT);
      #endif
  
@@ -1172,6 +1284,3 @@ index c24698c5..2b3e0e65 100644
      #ifdef VK_EXT_shader_module_identifier
      VULKAN_FN(vkGetShaderModuleCreateInfoIdentifierEXT);
      VULKAN_FN(vkGetShaderModuleIdentifierEXT);
-diff --git a/subprojects/.wraplock b/subprojects/.wraplock
-new file mode 100644
-index 00000000..e69de29b

@@ -27,8 +27,6 @@ if [[ "$actual_commit" != "$WIVRN_COMMIT" ]]; then
   exit 1
 fi
 
-"$repo_dir/scripts/apply-wivrn.sh" "$source_dir"
-
 # PC-only build. The headset APK/client is deliberately NOT built here.
 # GIT_TAG keeps the generated server/dashboard version aligned with the release tag.
 cmake -S "$source_dir" -B "$build_dir" -GNinja \

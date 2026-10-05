@@ -11,7 +11,6 @@ if [[ ! -d "$source_dir/.git" ]]; then
   exit 1
 fi
 
-"$repo_dir/scripts/apply-dxvk.sh" "$source_dir"
 cd "$source_dir"
 
 rm -rf build

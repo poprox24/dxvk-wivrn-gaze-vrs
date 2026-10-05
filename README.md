@@ -60,7 +60,7 @@ Verify the shared-memory file exists while a session is up:
 | `DXVK_GAZE_FULL_AREA=40` | Percent of the eye image that renders at full rate |
 | `DXVK_GAZE_MID_AREA=65` | Percent rendered at full or 2×2; beyond it uses `COARSE` |
 | `DXVK_GAZE_R1` / `R2` | Inner / outer radius of the sharp region |
-| `DXVK_GAZE_COARSE` | Outer shading-rate code (`6` = 2x4) |
+| `DXVK_GAZE_COARSE` | Outer shading-rate code (`auto` = Highest available for your system) |
 | `DXVK_GAZE_DEBUG=1` | Pass/gaze diagnostics |
 | `DXVK_GAZE_DOT=1` | Draw diagnostic gaze dots |
 | `DXVK_GAZE_SWAP_EYES=1` | Swap per-eye gaze data |
@@ -90,13 +90,13 @@ Both projects build from pinned revisions. Defaults live under `.work/`
 in the repo; override with env vars.
 
     # DXVK d30be2ba -> dist/dxvk
+    DXVK_SOURCE_DIR=/path/to/dxvk ./scripts/apply-dxvk.sh
     DXVK_SOURCE_DIR=/path/to/dxvk ./scripts/build-dxvk.sh
 
     # WiVRn v26.9 -> .work/WiVRn/build-gaze-vrs
+    WIVRN_SOURCE_DIR=/path/to/WiVRn ./scripts/apply-wivrn.sh
     WIVRN_SOURCE_DIR=/path/to/WiVRn ./scripts/build-wivrn.sh
 
-`build-dxvk.sh` and `build-wivrn.sh` call the matching `apply-*.sh`
-themselves - don't run those separately or the patch gets applied twice.
 `build-wivrn.sh` refuses to build unless the checkout is exactly the
 pinned commit; `versions.env` holds the pin.
 
