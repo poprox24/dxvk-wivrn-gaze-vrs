@@ -13,7 +13,8 @@ multiple foveation spots. These are the tested values, not universal
 requirements.
 
 > [!WARNING]
-> Experimental, use at your own risk. This is an unofficial modification, not endorsed by or affiliated with VRChat, WiVRn or DXVK. It replaces `d3d11.dll` and `dxgi.dll` in your Proton install, and VRChat's rules or anti-cheat may treat modified clients differently. I haven't verified how. Tested only on an RTX 3060 Ti with a Pico 4 Pro. I also recommend against using MSAA/Anti-Aliasing in VRChat with this, as increasing the MSAA sample count can limit the maximum VRS coarse rate available on some GPUs. For better image quality, use a higher render resolution instead.
+> Experimental, use at your own risk. This is an unofficial modification, not endorsed by or affiliated with VRChat, WiVRn or DXVK. It replaces `d3d11.dll` and `dxgi.dll` in your Proton install, and VRChat's rules or anti-cheat may treat modified clients differently. I haven't verified how. Tested only on an RTX 3060 Ti with a Pico 4 Pro.  
+> I also recommend against using MSAA/Anti-Aliasing in VRChat with this, as increasing the MSAA sample count can limit the maximum VRS coarse rate available on some GPUs. For better image quality, use a higher render resolution instead.
 
 ## Install
 
